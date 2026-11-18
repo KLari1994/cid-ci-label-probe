@@ -1,0 +1,45 @@
+# The `ci` label starts CI on a lane head (mac/, exe/) by re-running the head's check.yml run, whose ci-gate job
+# reads the labels live. check.yml itself never runs on a label event: a newer check.yml run without a `check` job
+# would leave the required check "expected" and keep the PR out of the merge queue.
+name: ci-label
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  rerun-check:
+    if: ${{ github.event.label.name == 'ci' && (startsWith(github.head_ref, 'mac/') || startsWith(github.head_ref, 'exe/')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+    steps:
+      - id: rerun
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          POLL_SECONDS: "10"
+          POLLS: "80"
+        run: |
+          for _ in $(seq "$POLLS"); do
+            run=$(gh api "repos/$REPO/actions/workflows/check.yml/runs?event=pull_request&head_sha=$SHA&per_page=1" --jq '.workflow_runs[0] | select(.) | "\(.id) \(.status)"')
+            if [[ -n $run ]]; then
+              read -r id status <<< "$run"
+              if gh api "repos/$REPO/actions/runs/$id/jobs" --jq '.jobs[].name' | grep -qx check; then
+                echo "check.yml run $id already runs check on $SHA"
+                exit 0
+              fi
+              if [[ $status == completed ]]; then
+                gh run rerun "$id" -R "$REPO"
+                echo "re-ran check.yml run $id on $SHA"
+                exit 0
+              fi
+            fi
+            sleep "$POLL_SECONDS"
+          done
+          echo "::error::no finished check.yml run on $SHA to re-run"
+          exit 1
