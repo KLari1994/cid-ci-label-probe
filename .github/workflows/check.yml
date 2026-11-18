@@ -1,0 +1,14 @@
+name: check
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+concurrency:
+  group: check-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci' && format('-ignored-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+jobs:
+  check:
+    name: ${{ github.event.action == 'labeled' && github.event.label.name != 'ci' && 'check (ignored label event)' || 'check' }}
+    if: ${{ github.event.action != 'labeled' || github.event.label.name == 'ci' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
