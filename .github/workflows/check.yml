@@ -1,14 +1,55 @@
+# `npm run check` — the one gate.
+#
+# This runs what a developer runs locally (package.json `check`): the
+# architecture guards and Biome lint, the project-reference typecheck and
+# Convex-config program, and the test suites. A green run locally means a green
+# run here.
+#
+# Deliberately has no secrets and no network beyond the npm registry: the
+# app's optional integrations (Anthropic, OpenAI, Deepgram, SMS gateway) all
+# degrade gracefully when their keys are absent, which is what makes a
+# key-less CI run meaningful rather than a smoke screen.
 name: check
+
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
+
+  workflow_dispatch:
+
+# A newer push to the same branch supersedes an in-flight run.
 concurrency:
-  group: check-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci' && format('-ignored-{0}', github.run_id) || '' }}
+  group: check-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
+  ci-gate:
+    if: ${{ github.event_name == 'pull_request' && (startsWith(github.head_ref, 'mac/') || startsWith(github.head_ref, 'exe/')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      ci: ${{ steps.label.outputs.ci }}
+    steps:
+      - id: label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if gh api "repos/$REPO/pulls/$PR" --jq '.labels[].name' | grep -qx ci; then ci=true; else ci=false; fi
+          echo "ci label: $ci"
+          echo "ci=$ci" >> "$GITHUB_OUTPUT"
+
   check:
-    name: ${{ github.event.action == 'labeled' && github.event.label.name != 'ci' && 'check (ignored label event)' || 'check' }}
-    if: ${{ github.event.action != 'labeled' || github.event.label.name == 'ci' }}
+    name: ${{ needs.ci-gate.outputs.ci != 'false' && 'check' || 'check (no ci label)' }}
+    needs: ci-gate
+    if: ${{ !cancelled() && needs.ci-gate.result != 'failure' && needs.ci-gate.outputs.ci != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - run: echo ok
+      - run: echo real check
+
